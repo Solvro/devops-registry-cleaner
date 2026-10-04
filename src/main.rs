@@ -1,5 +1,9 @@
+use std::env;
+
+use async_signal::{Signal, Signals};
 use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use cloneable_errors::{ErrorContext, ResContext, bail};
+use futures_lite::StreamExt;
 use tracing::{error, info};
 
 use crate::{
@@ -179,6 +183,17 @@ async fn delete_nominated_tags(client: &Client<'_>, repo: &str, tags: Vec<&str>)
 #[tokio::main]
 async fn main() -> Result<(), ErrorContext> {
     tracing_subscriber::fmt::init();
+
+    // if the 1st arg is "sleep", sleep until SIGINT
+    if env::args().nth(1).as_deref() == Some("sleep") {
+        info!("Sleeping until SIGINT/SIGTERM");
+        let mut signals = Signals::new([Signal::Int, Signal::Term])
+            .context("Failed to listen for SIGINT/SIGTERM")?;
+
+        signals.next().await;
+        return Ok(());
+    }
+
     let config = Config::get().context("Failed to load config")?;
     let client = config
         .make_client()
