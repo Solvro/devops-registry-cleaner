@@ -50,7 +50,7 @@ impl<'a> Client<'a> {
                     .text()
                     .await
                     .unwrap_or_else(|_| "[failed to read]".to_string())
-            )
+            );
         }
         Ok(response)
     }
@@ -109,7 +109,9 @@ impl<'a> Client<'a> {
                     "Failed to deserialize response as ImageManifest",
                 )?))
             }
-            _ => bail!("Response has an unknown Content-Type: {content_type}",),
+            _ => {
+                bail!("Response has an unknown Content-Type: {content_type}",);
+            }
         }
     }
 
@@ -138,7 +140,7 @@ impl<'a> Client<'a> {
                     .text()
                     .await
                     .unwrap_or_else(|_| "[failed to read]".to_string())
-            )
+            );
         }
         Ok(())
     }
