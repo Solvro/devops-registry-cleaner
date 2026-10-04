@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use cloneable_errors::{ErrorContext, ResContext, bail};
 use futures::future::select_all;
 use slab::Slab;
@@ -81,9 +81,10 @@ async fn list_tags_for_deletion<'a>(
     #[derive(Debug)]
     struct Tag<'a> {
         name: &'a str,
-        created_at: DateTime<FixedOffset>,
+        age: TimeDelta,
     }
 
+    let now = Utc::now().fixed_offset();
     // make a list of tags -> dates for each rule
     let mut tag_groups: Vec<Vec<Tag<'a>>> = (0..config.rules.len()).map(|_| Vec::new()).collect();
 
@@ -141,18 +142,42 @@ async fn list_tags_for_deletion<'a>(
 
             tag_groups[rule_idx].push(Tag {
                 name: tag,
-                created_at: result,
+                age: now - result,
             });
         }
     }
 
+    // sort each group by image creation date, from newest to oldest
     for group in &mut tag_groups {
-        group.sort_unstable_by(|a, b| a.created_at.cmp(&b.created_at).reverse());
+        group.sort_unstable_by_key(|a| a.age);
     }
 
-    dbg!(repo, tag_groups);
+    dbg!(repo, &tag_groups);
 
-    Ok(Vec::new())
+    // nominate tags for deletion
+    let tags_to_delete: Vec<_> = tag_groups
+        .iter()
+        .zip(&config.rules)
+        .flat_map(|(group, rule)| {
+            group
+                .iter()
+                .enumerate()
+                .filter(|(idx, tag)| {
+                    //   remember that idx starts at 0 - vvv
+                    rule.max_tags.is_some_and(|max_tags| {
+                        *idx >= max_tags
+                            && rule
+                                .overflow_max_age
+                                .is_none_or(|max_age| tag.age > max_age)
+                    }) || rule.max_age.is_some_and(|max_age| tag.age > max_age)
+                })
+                .map(|(.., tag)| tag.name)
+        })
+        .collect();
+
+    dbg!(&tags_to_delete);
+
+    Ok(tags_to_delete)
 }
 
 #[tokio::main]
