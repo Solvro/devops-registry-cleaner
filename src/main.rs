@@ -1,11 +1,12 @@
-use std::collections::LinkedList;
-
 use chrono::{DateTime, FixedOffset};
-use cloneable_errors::{ErrorContext, ResContext};
+use cloneable_errors::{ErrorContext, ResContext, bail};
 use futures::future::select_all;
 use slab::Slab;
 
-use crate::{api::client::Client, config::Config};
+use crate::{
+    api::{client::Client, types::Manifest},
+    config::Config,
+};
 
 pub mod api;
 pub mod config;
@@ -16,30 +17,45 @@ async fn get_image_creation_date(
     repo: &str,
     tag: &str,
 ) -> Result<DateTime<FixedOffset>, ErrorContext> {
-    // list the image's manifests
-    let manifests = client
-        .list_manifests(repo, tag)
-        .await
-        .with_context(|| format!("Failed to list manifests for {repo}:{tag}"))?;
-
-    // pick a manifest with os & platform
-    // other are often fake provenance/signing manifests
-    let summary = manifests
-        .manifests
-        .iter()
-        .find(|m| m.platform.os != "unknown" && m.platform.architecture != "unknown")
-        .with_context(|| format!("Image {repo}:{tag} has no usable manifests"))?;
-
-    // download the manifest
+    // get the manifest for the tag
     let manifest = client
-        .get_manifest(repo, &summary.digest, &summary.media_type)
+        .get_manifest(repo, tag)
         .await
-        .with_context(|| {
-            format!(
-                "Failed to fetch manifest {} ({}) for {repo}:{tag}",
-                summary.digest, summary.media_type
-            )
-        })?;
+        .with_context(|| format!("Failed to get manifest for {repo}:{tag}"))?;
+
+    // the image may have a "fat" (index) manifest
+    let manifest = match manifest {
+        // if it is a simple image manifest, then we don't have to do anything else here
+        Manifest::Image(manifest) => manifest,
+        // if it's an index, pick a manifest with os & platform
+        // other are often fake provenance/signing manifests
+        Manifest::Fat(index) => {
+            let summary = index
+                .manifests
+                .iter()
+                .find(|m| m.platform.os != "unknown" && m.platform.architecture != "unknown")
+                .with_context(|| format!("Image {repo}:{tag} has no usable manifests"))?;
+
+            // download the manifest
+            let manifest = client
+                .get_manifest(repo, &summary.digest)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to fetch manifest {} for {repo}:{tag}",
+                        summary.digest
+                    )
+                })?;
+
+            // it should be an image manifest here
+            // (could technically be another index, hope it is not)
+            let Manifest::Image(manifest) = manifest else {
+                bail!("Image {repo}:{tag} has a nested manifest",);
+            };
+
+            manifest
+        }
+    };
 
     // fetch the manifest's config
     let config = client

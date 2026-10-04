@@ -13,16 +13,21 @@ pub struct TagListing {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug)]
+pub enum Manifest {
+    Image(ImageManifest),
+    Fat(FatManifest),
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ManifestsListing {
+pub struct FatManifest {
     pub manifests: Vec<ManifestSummary>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestSummary {
-    pub media_type: String,
     pub digest: String,
     pub platform: Platform,
 }
@@ -36,7 +41,7 @@ pub struct Platform {
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct Manifest {
+pub struct ImageManifest {
     pub config: ImageConfigReference,
 }
 

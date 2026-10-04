@@ -1,11 +1,14 @@
 use std::any::type_name;
 
 use cloneable_errors::{ErrorContext, ResContext, bail};
-use reqwest::header::{self, HeaderValue};
+use reqwest::{
+    Response,
+    header::{self, HeaderValue},
+};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    api::types::{Catalog, ImageConfig, Manifest, ManifestsListing, TagListing},
+    api::types::{Catalog, ImageConfig, Manifest, TagListing},
     utils::UrlExt,
 };
 
@@ -24,11 +27,11 @@ impl<'a> Client<'a> {
         })
     }
 
-    async fn make_get_request<T: DeserializeOwned>(
+    async fn send_get_request(
         &self,
         segments: &[&str],
         content_type: Option<HeaderValue>,
-    ) -> Result<T, ErrorContext> {
+    ) -> Result<Response, ErrorContext> {
         let mut url = self.config.base_url.clone();
         url.extend_path(segments);
         let mut request = self
@@ -49,6 +52,15 @@ impl<'a> Client<'a> {
                     .unwrap_or_else(|_| "[failed to read]".to_string())
             )
         }
+        Ok(response)
+    }
+
+    async fn handle_get_request<T: DeserializeOwned>(
+        &self,
+        segments: &[&str],
+        content_type: Option<HeaderValue>,
+    ) -> Result<T, ErrorContext> {
+        let response = self.send_get_request(segments, content_type).await?;
 
         response
             .json()
@@ -57,34 +69,48 @@ impl<'a> Client<'a> {
     }
 
     pub async fn get_catalog(&self) -> Result<Catalog, ErrorContext> {
-        self.make_get_request(&["v2", "_catalog"], None).await
+        self.handle_get_request(&["v2", "_catalog"], None).await
     }
 
     pub async fn list_tags(&self, repo: &str) -> Result<TagListing, ErrorContext> {
-        self.make_get_request(&["v2", repo, "tags", "list"], None)
-            .await
-    }
-
-    pub async fn list_manifests(
-        &self,
-        repo: &str,
-        tag: &str,
-    ) -> Result<ManifestsListing, ErrorContext> {
-        self.make_get_request(&["v2", repo, "manifests", tag], None)
+        self.handle_get_request(&["v2", repo, "tags", "list"], None)
             .await
     }
 
     pub async fn get_manifest(
         &self,
         repo: &str,
-        digest: &str,
-        content_type: &str,
+        reference: &str,
     ) -> Result<Manifest, ErrorContext> {
-        self.make_get_request(
-            &["v2", repo, "manifests", digest],
-            Some(HeaderValue::from_str(content_type).context("Invalid content_type")?),
-        )
-        .await
+        const CONTENT_TYPE: Option<HeaderValue> = Some(HeaderValue::from_static(
+            "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+        ));
+        let response = self
+            .send_get_request(&["v2", repo, "manifests", reference], CONTENT_TYPE)
+            .await?;
+
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .context("Response is missing a Content-Type header")?;
+        let content_type = content_type
+            .to_str()
+            .context("Response has an unparseable Content-Type header")?;
+        match content_type {
+            "application/vnd.oci.image.index.v1+json"
+            | "application/vnd.docker.distribution.manifest.list.v2+json" => {
+                Ok(Manifest::Fat(response.json().await.context(
+                    "Failed to deserialize response as FatManifest",
+                )?))
+            }
+            "application/vnd.docker.distribution.manifest.v2+json"
+            | "application/vnd.oci.image.manifest.v1+json" => {
+                Ok(Manifest::Image(response.json().await.context(
+                    "Failed to deserialize response as ImageManifest",
+                )?))
+            }
+            _ => bail!("Response has an unknown Content-Type: {content_type}",),
+        }
     }
 
     pub async fn get_image_config(
@@ -92,7 +118,7 @@ impl<'a> Client<'a> {
         repo: &str,
         digest: &str,
     ) -> Result<ImageConfig, ErrorContext> {
-        self.make_get_request(&["v2", repo, "blobs", digest], None)
+        self.handle_get_request(&["v2", repo, "blobs", digest], None)
             .await
     }
 }
