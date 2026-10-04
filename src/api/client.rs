@@ -121,4 +121,25 @@ impl<'a> Client<'a> {
         self.handle_get_request(&["v2", repo, "blobs", digest], None)
             .await
     }
+
+    pub async fn delete_tag(&self, repo: &str, tag: &str) -> Result<(), ErrorContext> {
+        let mut url = self.config.base_url.clone();
+        url.extend_path(["v2", repo, "manifests", tag]);
+        let request = self
+            .http
+            .delete(url)
+            .basic_auth(&self.config.username, Some(&self.config.password));
+        let response = request.send().await.context("Failed to send request")?;
+        if response.status() != 202 {
+            bail!(
+                "Unexpected response code, expected 202, got {} with body {}",
+                response.status(),
+                response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "[failed to read]".to_string())
+            )
+        }
+        Ok(())
+    }
 }

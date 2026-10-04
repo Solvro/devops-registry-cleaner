@@ -2,6 +2,7 @@ use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use cloneable_errors::{ErrorContext, ResContext, bail};
 use futures::future::select_all;
 use slab::Slab;
+use tracing::{error, info};
 
 use crate::{
     api::{client::Client, types::Manifest},
@@ -77,7 +78,7 @@ async fn list_tags_for_deletion<'a>(
     client: &Client<'_>,
     repo: &str,
     tags: &'a [String],
-) -> Result<Vec<&'a str>, ErrorContext> {
+) -> Vec<&'a str> {
     #[derive(Debug)]
     struct Tag<'a> {
         name: &'a str,
@@ -136,9 +137,13 @@ async fn list_tags_for_deletion<'a>(
             );
 
             // unwrap the result
-            let result = result.with_context(|| {
-                format!("Failed to get the image creation date for {repo}:{tag}")
-            })?;
+            let result = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to get the image creation date for {repo}:{tag}: {e:?}");
+                    continue;
+                }
+            };
 
             tag_groups[rule_idx].push(Tag {
                 name: tag,
@@ -152,10 +157,8 @@ async fn list_tags_for_deletion<'a>(
         group.sort_unstable_by_key(|a| a.age);
     }
 
-    dbg!(repo, &tag_groups);
-
     // nominate tags for deletion
-    let tags_to_delete: Vec<_> = tag_groups
+    tag_groups
         .iter()
         .zip(&config.rules)
         .flat_map(|(group, rule)| {
@@ -173,11 +176,39 @@ async fn list_tags_for_deletion<'a>(
                 })
                 .map(|(.., tag)| tag.name)
         })
-        .collect();
+        .collect()
+}
 
-    dbg!(&tags_to_delete);
+async fn delete_nominated_tags(client: &Client<'_>, repo: &str, tags: Vec<&str>) {
+    let mut completed = 0;
 
-    Ok(tags_to_delete)
+    // this is once again mostly just waiting on the network, so let's run this concurrently on the
+    // same thread
+    let mut futures = Slab::with_capacity(tags.len());
+
+    for tag in tags {
+        futures.insert((tag, Box::pin(client.delete_tag(repo, tag))));
+    }
+
+    while !futures.is_empty() {
+        let (result, idx, ..) = select_all(futures.iter_mut().map(|(.., (.., f))| f)).await;
+
+        let (tag, ..) = futures.remove(
+            // indexes != slab keys, so we have to iterate over the entire slab to find the key
+            // for an index
+            futures
+                .iter()
+                .nth(idx)
+                .expect("index returned by select_all should exist")
+                .0,
+        );
+        if let Err(e) = result {
+            error!("Failed to delete {repo}:{tag}: {e:?}");
+        }
+        completed += 1;
+    }
+
+    info!("{repo}: deleted {completed} tags");
 }
 
 #[tokio::main]
@@ -193,17 +224,22 @@ async fn main() -> Result<(), ErrorContext> {
         .await
         .context("Failed to list images")?;
 
+    info!("Found {} images in catalog", catalog.repositories.len());
+
     for repo in catalog.repositories {
         let tags = client
             .list_tags(&repo)
             .await
             .with_context(|| format!("Failed to list tags for {repo}"))?;
 
-        list_tags_for_deletion(&config, &client, &repo, &tags.tags)
-            .await
-            .with_context(|| {
-                format!("Failed to pick tag candidates for deletion from repo {repo}")
-            })?;
+        let to_delete = list_tags_for_deletion(&config, &client, &repo, &tags.tags).await;
+
+        info!(
+            "{repo}: nominated {}/{} tags for deletion",
+            to_delete.len(),
+            tags.tags.len()
+        );
+        delete_nominated_tags(&client, &repo, to_delete).await;
     }
 
     Ok(())
