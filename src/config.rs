@@ -28,19 +28,30 @@ pub struct RegistryConfig {
 #[derive(Deserialize)]
 pub struct Rule {
     /// regex pattern for repo names
-    #[serde(deserialize_with = "deserialize_regex")]
-    pub repo_pattern: Regex,
+    ///
+    /// none = match all
+    #[serde(deserialize_with = "deserialize_regex", default)]
+    pub repo_pattern: Option<Regex>,
     /// regex pattern for tag names
-    #[serde(deserialize_with = "deserialize_regex")]
-    pub tag_pattern: Regex,
+    ///
+    /// none = match all
+    #[serde(deserialize_with = "deserialize_regex", default)]
+    pub tag_pattern: Option<Regex>,
     /// how many tags to keep
-    pub max_tags: usize,
+    ///
+    /// none = no limit (no tag is treated as "overflow")
+    #[serde(default)]
+    pub max_tags: Option<usize>,
     /// for tags over `max_tags`, delete if age is over this
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub overflow_max_age: TimeDelta,
+    ///
+    /// none = delete all overflow
+    #[serde(deserialize_with = "deserialize_duration", default)]
+    pub overflow_max_age: Option<TimeDelta>,
     /// delete any tag older than this
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub max_age: TimeDelta,
+    ///
+    /// none = don't delete tags under `max_tags`
+    #[serde(deserialize_with = "deserialize_duration", default)]
+    pub max_age: Option<TimeDelta>,
 }
 
 impl Config {
@@ -60,6 +71,14 @@ impl Config {
 
     pub fn make_client(&self) -> Result<Client<'_>, ErrorContext> {
         Client::new(&self.registry)
+    }
+}
+
+impl Rule {
+    #[must_use]
+    pub fn is_match(&self, repo: &str, tag: &str) -> bool {
+        self.repo_pattern.as_ref().is_none_or(|p| p.is_match(repo))
+            && self.tag_pattern.as_ref().is_none_or(|p| p.is_match(tag))
     }
 }
 
@@ -90,10 +109,12 @@ fn deserialize_url<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Url, D:
     deserializer.deserialize_str(UrlVisitor)
 }
 
-fn deserialize_regex<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Regex, D::Error> {
+fn deserialize_regex<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Regex>, D::Error> {
     struct RegexVisitor;
     impl Visitor<'_> for RegexVisitor {
-        type Value = Regex;
+        type Value = Option<Regex>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("a valid regex pattern")
@@ -103,17 +124,26 @@ fn deserialize_regex<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Regex
         where
             E: serde::de::Error,
         {
-            Regex::new(v).map_err(E::custom)
+            Regex::new(v).map_err(E::custom).map(Some)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
         }
     }
 
     deserializer.deserialize_str(RegexVisitor)
 }
 
-fn deserialize_duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<TimeDelta, D::Error> {
+fn deserialize_duration<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<TimeDelta>, D::Error> {
     struct TimeDeltaVisitor;
     impl Visitor<'_> for TimeDeltaVisitor {
-        type Value = TimeDelta;
+        type Value = Option<TimeDelta>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("a number with a time unit suffix")
@@ -125,41 +155,58 @@ fn deserialize_duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Ti
         {
             let number: i64 = v[0..v.len() - 1].trim().parse().map_err(E::custom)?;
             match &v[v.len() - 1..] {
-                "s" => TimeDelta::try_seconds(number).ok_or_else(|| {
-                    E::invalid_value(
-                        Unexpected::Str(v),
-                        &"a duration that doesn't exceed the limit",
-                    )
-                }),
-                "m" => TimeDelta::try_minutes(number).ok_or_else(|| {
-                    E::invalid_value(
-                        Unexpected::Str(v),
-                        &"a duration that doesn't exceed the limit",
-                    )
-                }),
-                "h" => TimeDelta::try_hours(number).ok_or_else(|| {
-                    E::invalid_value(
-                        Unexpected::Str(v),
-                        &"a duration that doesn't exceed the limit",
-                    )
-                }),
-                "d" => TimeDelta::try_days(number).ok_or_else(|| {
-                    E::invalid_value(
-                        Unexpected::Str(v),
-                        &"a duration that doesn't exceed the limit",
-                    )
-                }),
-                "w" => TimeDelta::try_weeks(number).ok_or_else(|| {
-                    E::invalid_value(
-                        Unexpected::Str(v),
-                        &"a duration that doesn't exceed the limit",
-                    )
-                }),
+                "s" => TimeDelta::try_seconds(number)
+                    .ok_or_else(|| {
+                        E::invalid_value(
+                            Unexpected::Str(v),
+                            &"a duration that doesn't exceed the limit",
+                        )
+                    })
+                    .map(Some),
+                "m" => TimeDelta::try_minutes(number)
+                    .ok_or_else(|| {
+                        E::invalid_value(
+                            Unexpected::Str(v),
+                            &"a duration that doesn't exceed the limit",
+                        )
+                    })
+                    .map(Some),
+                "h" => TimeDelta::try_hours(number)
+                    .ok_or_else(|| {
+                        E::invalid_value(
+                            Unexpected::Str(v),
+                            &"a duration that doesn't exceed the limit",
+                        )
+                    })
+                    .map(Some),
+                "d" => TimeDelta::try_days(number)
+                    .ok_or_else(|| {
+                        E::invalid_value(
+                            Unexpected::Str(v),
+                            &"a duration that doesn't exceed the limit",
+                        )
+                    })
+                    .map(Some),
+                "w" => TimeDelta::try_weeks(number)
+                    .ok_or_else(|| {
+                        E::invalid_value(
+                            Unexpected::Str(v),
+                            &"a duration that doesn't exceed the limit",
+                        )
+                    })
+                    .map(Some),
                 _ => Err(E::invalid_value(
                     Unexpected::Str(v),
                     &"a supported time unit suffix",
                 )),
             }
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
         }
     }
 

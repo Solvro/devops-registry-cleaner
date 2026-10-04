@@ -4,15 +4,18 @@ username = "someuser"
 password = "the password"
 
 [[rules]]
-repo_pattern = ""
-tag_pattern = "pr-"
-max_tags = 0
-overflow_max_age = "1d"
+# for images of some-app, with tags starting with pr-, delete all older than 1 day
+repo_pattern = "^some-app$"
+tag_pattern = "^pr-"
 max_age = "1d"
 
 [[rules]]
-repo_pattern = ""
-tag_pattern = "^[\\da-f]{64}$"
+# for any image with a 40-char hex string as the tag, keep latest two for 30 days, delete others if older than 3 days
+tag_pattern = "^[\\da-f]{40}$"
 max_tags = 2
 overflow_max_age = "3d"
 max_age = "30d"
+
+[[rules]]
+# delete any image not matched by the previous rules
+max_tags = 0
