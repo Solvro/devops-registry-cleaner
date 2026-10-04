@@ -61,6 +61,16 @@ where
     }
 }
 
+impl<F> FutureSet<F, (), ()>
+where
+    F: Future<Output = ()> + Unpin,
+{
+    /// Await all the futures in the set in a loop, until all are completed.
+    pub async fn finish_all(mut self) {
+        while self.next().await.is_some() {}
+    }
+}
+
 impl<F, Output, Meta> Future for FutureSet<F, Output, Meta>
 where
     F: Future<Output = Output> + Unpin,

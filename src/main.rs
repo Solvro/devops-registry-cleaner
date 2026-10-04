@@ -191,21 +191,33 @@ async fn main() -> Result<(), ErrorContext> {
 
     info!("Found {} images in catalog", catalog.repositories.len());
 
-    for repo in catalog.repositories {
-        let tags = client
-            .list_tags(&repo)
-            .await
-            .with_context(|| format!("Failed to list tags for {repo}"))?;
+    let futures: FutureSet<_, _, _> = catalog
+        .repositories
+        .into_iter()
+        .map(|repo| {
+            let config = &config;
+            let client = &client;
+            Box::pin(async move {
+                let tags = match client.list_tags(&repo).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("{repo}: failed to list tags: {e:?}");
+                        return;
+                    }
+                };
 
-        let to_delete = list_tags_for_deletion(&config, &client, &repo, &tags.tags).await;
+                let to_delete = list_tags_for_deletion(config, client, &repo, &tags.tags).await;
 
-        info!(
-            "{repo}: nominated {}/{} tags for deletion",
-            to_delete.len(),
-            tags.tags.len()
-        );
-        delete_nominated_tags(&client, &repo, to_delete).await;
-    }
+                info!(
+                    "{repo}: nominated {}/{} tags for deletion",
+                    to_delete.len(),
+                    tags.tags.len()
+                );
+                delete_nominated_tags(client, &repo, to_delete).await;
+            })
+        })
+        .collect();
+    futures.finish_all().await;
 
     Ok(())
 }
