@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 async-signal = "0.2.14"
 chrono = { version = "0.4.45", features = ["serde"] }
-cloneable_errors = "2.3.0"
+cloneable_errors = "3.0.0"
 futures-lite = "2.6.1"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", features = ["json"] }
