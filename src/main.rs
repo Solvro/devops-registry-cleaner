@@ -1,12 +1,11 @@
 use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use cloneable_errors::{ErrorContext, ResContext, bail};
-use futures::future::select_all;
-use slab::Slab;
 use tracing::{error, info};
 
 use crate::{
     api::{client::Client, types::Manifest},
     config::Config,
+    utils::FutureSet,
 };
 
 pub mod api;
@@ -96,46 +95,24 @@ async fn list_tags_for_deletion<'a>(
         // not using tasks allows us to avoid cloning data and keep using 'a lifetime refs
         // (task spawning requires 'static)
         // so, first create all the futures for each tag
-        let mut futures = Slab::with_capacity(tags.len());
-        for tag in tags {
-            // try to match a rule
-            let Some(rule_idx) = config
-                .rules
-                .iter()
-                .position(|rule| rule.is_match(repo, tag))
-            else {
-                continue;
-            };
+        let mut future_set: FutureSet<_, _, _> = tags
+            .iter()
+            .filter_map(|tag| {
+                // try to match a rule
+                let rule_idx = config
+                    .rules
+                    .iter()
+                    .position(|rule| rule.is_match(repo, tag))?;
 
-            futures.insert((
-                rule_idx,
-                tag,
-                Box::pin(get_image_creation_date(client, repo, tag)),
-            ));
-        }
+                Some((
+                    Box::pin(get_image_creation_date(client, repo, tag)),
+                    (rule_idx, tag),
+                ))
+            })
+            .collect();
 
         // then drive all the futures at once, until they all complete
-        //
-        // to avoid allocations (i think) use select_all instead of join_all, and complete the
-        // tag_groups array incrementally
-        //
-        // (eh, join_all would be much simpler, wouldn't it? can't learn without experimenting
-        // though)
-        while !futures.is_empty() {
-            // complete the next future
-            let (result, idx, ..) = select_all(futures.iter_mut().map(|(_, (.., fut))| fut)).await;
-
-            // remove it from the slab
-            let (rule_idx, tag, ..) = futures.remove(
-                // indexes != slab keys, so we have to iterate over the entire slab to find the key
-                // for an index
-                futures
-                    .iter()
-                    .nth(idx)
-                    .expect("index returned by select_all should exist")
-                    .0,
-            );
-
+        while let Some((result, (rule_idx, tag))) = future_set.next().await {
             // unwrap the result
             let result = match result {
                 Ok(v) => v,
@@ -184,24 +161,12 @@ async fn delete_nominated_tags(client: &Client<'_>, repo: &str, tags: Vec<&str>)
 
     // this is once again mostly just waiting on the network, so let's run this concurrently on the
     // same thread
-    let mut futures = Slab::with_capacity(tags.len());
+    let mut future_set: FutureSet<_, _, _> = tags
+        .into_iter()
+        .map(|tag| (Box::pin(client.delete_tag(repo, tag)), tag))
+        .collect();
 
-    for tag in tags {
-        futures.insert((tag, Box::pin(client.delete_tag(repo, tag))));
-    }
-
-    while !futures.is_empty() {
-        let (result, idx, ..) = select_all(futures.iter_mut().map(|(.., (.., f))| f)).await;
-
-        let (tag, ..) = futures.remove(
-            // indexes != slab keys, so we have to iterate over the entire slab to find the key
-            // for an index
-            futures
-                .iter()
-                .nth(idx)
-                .expect("index returned by select_all should exist")
-                .0,
-        );
+    while let Some((result, tag)) = future_set.next().await {
         if let Err(e) = result {
             error!("Failed to delete {repo}:{tag}: {e:?}");
         }
