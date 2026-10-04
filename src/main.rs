@@ -184,8 +184,8 @@ async fn delete_nominated_tags(client: &Client<'_>, repo: &str, tags: Vec<&str>)
 async fn main() -> Result<(), ErrorContext> {
     tracing_subscriber::fmt::init();
 
-    // if the 1st arg is "sleep", sleep until SIGINT
-    if env::args().nth(1).as_deref() == Some("sleep") {
+    // if the program name ends with "sleep", sleep until SIGINT
+    if env::args().next().is_some_and(|s| s.ends_with("sleep")) {
         info!("Sleeping until SIGINT/SIGTERM");
         let mut signals = Signals::new([Signal::Int, Signal::Term])
             .context("Failed to listen for SIGINT/SIGTERM")?;
