@@ -5,6 +5,7 @@ use reqwest::{
     Response,
     header::{self, HeaderValue},
 };
+use rustls::{ClientConfig, RootCertStore};
 use serde::de::DeserializeOwned;
 
 use crate::{
@@ -19,8 +20,14 @@ pub struct Client<'a> {
 
 impl<'a> Client<'a> {
     pub fn new(config: &'a crate::config::RegistryConfig) -> Result<Self, ErrorContext> {
+        let rustls = ClientConfig::builder()
+            .with_root_certificates(RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            })
+            .with_no_client_auth();
         Ok(Self {
             http: reqwest::ClientBuilder::new()
+                .tls_backend_preconfigured(rustls)
                 .build()
                 .context("Failed to build reqwest client")?,
             config,
